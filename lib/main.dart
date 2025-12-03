@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'routes/app_routes.dart';
+import 'screens/folder.dart';
 import 'screens/home.dart';
 
 void main() {
@@ -16,7 +17,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      home: const HomePage(),
+      home: const AlbumBook(),
       onGenerateRoute: (settings) {
         if (settings.name == AppRoutes.homePicker) {
           final args = settings.arguments as HomePickerArguments?;
