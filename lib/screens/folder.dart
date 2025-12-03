@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -341,9 +342,7 @@ class _AlbumBookState extends State<AlbumBook> {
       final mediaItem = photo.mediaItem;
       if (mediaItem != null && mediaItem.type == MediaType.video && photo.imageBytes == null) {
         final bytes = await Navigator.of(context).push<Uint8List?>(
-          MaterialPageRoute(
-            builder: (_) => DetailVideoPage(item: mediaItem),
-          ),
+          _buildVideoDetailRoute(mediaItem),
         );
         if (bytes != null) {
           processed.add(AlbumPhoto(mediaItem: mediaItem, imageBytes: bytes));
@@ -404,6 +403,20 @@ class _AlbumBookState extends State<AlbumBook> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _pageFlipController.goToPage(_currentPageIndex);
     });
+  }
+
+  PageRoute<Uint8List?> _buildVideoDetailRoute(MediaItem mediaItem) {
+    return PageRouteBuilder<Uint8List?>(
+      transitionDuration: const Duration(milliseconds: 180),
+      reverseTransitionDuration: const Duration(milliseconds: 180),
+      pageBuilder: (_, __, ___) => DetailVideoPage(item: mediaItem),
+      transitionsBuilder: (_, animation, __, child) {
+        return FadeTransition(
+          opacity: animation,
+          child: child,
+        );
+      },
+    );
   }
 }
 

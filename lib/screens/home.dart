@@ -31,6 +31,7 @@ class _HomePageState extends State<HomePage> {
   final List<MediaItem> selectedItems = [];
   final List<_PickerSelection> pickerSelections = [];
   final Map<String, Uint8List> _videoSnapshots = {};
+  final Map<String, Future<Uint8List?>> _thumbnailFutures = {};
   bool showThisMonthOnly = false;
   bool isLoading = true;
   bool _initialSelectionsRestored = false;
@@ -49,21 +50,32 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    List<AssetPathEntity> albums =
-        await PhotoManager.getAssetPathList(type: RequestType.all);
+    final List<AssetPathEntity> albums = await PhotoManager.getAssetPathList(
+      type: RequestType.all,
+      onlyAll: true,
+      filterOption: FilterOptionGroup(
+        orders: [const OrderOption(type: OrderOptionType.createDate, asc: false)],
+      ),
+    );
 
+    if (albums.isEmpty) {
+      setState(() {
+        mediaList.clear();
+        isLoading = false;
+      });
+      return;
+    }
+
+    final AssetPathEntity primaryAlbum = albums.first;
     List<AssetEntity> allAssets = [];
-
-    for (var album in albums) {
-      int page = 0;
-      const int pageSize = 500;
-      while (true) {
-        final assets = await album.getAssetListPaged(page: page, size: pageSize);
-        if (assets.isEmpty) break;
-        allAssets.addAll(assets);
-        if (assets.length < pageSize) break;
-        page++;
-      }
+    int page = 0;
+    const int pageSize = 400;
+    while (true) {
+      final assets = await primaryAlbum.getAssetListPaged(page: page, size: pageSize);
+      if (assets.isEmpty) break;
+      allAssets.addAll(assets);
+      if (assets.length < pageSize) break;
+      page++;
     }
 
     // กรองเดือนนี้ถ้าต้องการ
@@ -92,14 +104,26 @@ class _HomePageState extends State<HomePage> {
         type: a.type == AssetType.video ? MediaType.video : MediaType.image,
       );
     }).toList();
+    final nextIds = temp.map((item) => item.asset.id).toSet();
+
+    List<_PickerSelection>? restoredSelections;
+    if (widget.selectionMode && !_initialSelectionsRestored) {
+      restoredSelections = _buildInitialSelections(temp);
+    }
 
     setState(() {
       mediaList
         ..clear()
         ..addAll(temp);
+      _thumbnailFutures.removeWhere((key, _) => !nextIds.contains(key));
+      if (restoredSelections != null) {
+        pickerSelections
+          ..clear()
+          ..addAll(restoredSelections);
+        _initialSelectionsRestored = true;
+      }
       isLoading = false;
     });
-    _restoreInitialSelections();
   }
 
   void toggleThisMonth(bool value) async {
@@ -110,8 +134,9 @@ class _HomePageState extends State<HomePage> {
     await loadAllMediaFromDevice();
   }
 
-  MediaItem? _findMediaById(String id) {
-    for (final item in mediaList) {
+  MediaItem? _findMediaById(String id, {List<MediaItem>? source}) {
+    final iterable = source ?? mediaList;
+    for (final item in iterable) {
       if (item.asset.id == id) {
         return item;
       }
@@ -226,6 +251,17 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  PageRoute<Uint8List?> _buildVideoDetailRoute(MediaItem item) {
+    return PageRouteBuilder<Uint8List?>(
+      transitionDuration: const Duration(milliseconds: 180),
+      reverseTransitionDuration: const Duration(milliseconds: 180),
+      pageBuilder: (_, __, ___) => DetailVideoPage(item: item),
+      transitionsBuilder: (_, animation, __, child) {
+        return FadeTransition(opacity: animation, child: child);
+      },
+    );
+  }
+
   Future<void> _handleSelectionModeTap(MediaItem item) async {
     final itemId = item.asset.id;
     final existingIndex =
@@ -243,11 +279,9 @@ class _HomePageState extends State<HomePage> {
     if (item.type == MediaType.video) {
       final bytes = await Navigator.push<Uint8List?>(
         context,
-        MaterialPageRoute(
-          builder: (_) => DetailVideoPage(item: item),
-        ),
+        _buildVideoDetailRoute(item),
       );
-      if (bytes == null) return;
+      if (!mounted || bytes == null) return;
       setState(() {
         _videoSnapshots[item.asset.id] = bytes;
         pickerSelections.add(_PickerSelection(mediaItem: item, imageBytes: bytes));
@@ -295,30 +329,24 @@ class _HomePageState extends State<HomePage> {
     return idx == -1 ? null : idx + 1;
   }
 
-  void _restoreInitialSelections() {
-    if (!widget.selectionMode || _initialSelectionsRestored) return;
-    if (mediaList.isEmpty) return;
+  List<_PickerSelection> _buildInitialSelections(List<MediaItem> available) {
+    final selections = <_PickerSelection>[];
     for (final id in widget.preselectedAssetIds) {
-      if (pickerSelections.length >= widget.selectionLimit) break;
-      final match = _findMediaById(id);
+      if (selections.length >= widget.selectionLimit) break;
+      final match = _findMediaById(id, source: available);
       if (match == null) continue;
-      final alreadyAdded = pickerSelections
-          .any((entry) => entry.mediaItem.asset.id == match.asset.id);
-      if (!alreadyAdded) {
-        final screenshot = widget.preselectedScreenshots[id];
-        if (screenshot != null) {
-          _videoSnapshots[id] = screenshot;
-        }
-        pickerSelections.add(
-          _PickerSelection(
-            mediaItem: match,
-            imageBytes: screenshot,
-          ),
-        );
+      final screenshot = widget.preselectedScreenshots[id];
+      if (screenshot != null) {
+        _videoSnapshots[id] = screenshot;
       }
+      selections.add(
+        _PickerSelection(
+          mediaItem: match,
+          imageBytes: screenshot,
+        ),
+      );
     }
-    _initialSelectionsRestored = true;
-    setState(() {});
+    return selections;
   }
 
   @override
@@ -359,114 +387,15 @@ class _HomePageState extends State<HomePage> {
           ),
           const SizedBox(height: 12),
           Expanded(
-            child: isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : GridView.builder(
-                    padding: const EdgeInsets.all(12),
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3,
-                      crossAxisSpacing: 5,
-                      mainAxisSpacing: 10,
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 250),
+              child: isLoading
+                  ? const _MediaLoadingIndicator()
+                  : KeyedSubtree(
+                      key: ValueKey<int>(mediaList.length),
+                      child: _buildMediaGrid(),
                     ),
-                    itemCount: mediaList.length,
-                    itemBuilder: (context, index) {
-                      final item = mediaList[index];
-                      final selectionIndex = _selectionIndexFor(item);
-                      final isSelected = widget.selectionMode
-                          ? selectionIndex != null
-                          : selectedItems.contains(item);
-                      return FutureBuilder<Uint8List?>(
-                        future: item.asset.thumbnailDataWithSize(
-                            const ThumbnailSize(300, 300)),
-                        builder: (context, snapshot) {
-                          if (!snapshot.hasData) {
-                            return Container(color: Colors.grey.shade300);
-                          }
-                          return GestureDetector(
-                            onTap: () async {
-                              if (widget.selectionMode) {
-                                await _handleSelectionModeTap(item);
-                                if (widget.selectionLimit == 1 &&
-                                    pickerSelections.isNotEmpty) {
-                                  _completePickerSelection();
-                                }
-                                return;
-                              }
-                              Uint8List? capturedBytes;
-                              if (item.type == MediaType.video) {
-                                capturedBytes = await Navigator.push<Uint8List?>(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => DetailVideoPage(item: item),
-                                  ),
-                                );
-                                if (capturedBytes == null) return;
-                              }
-                              setState(() {
-                                if (isSelected) {
-                                  selectedItems.remove(item);
-                                } else {
-                                  if (selectedItems.length >= widget.selectionLimit) {
-                                    _showLimitSnackBar();
-                                    return;
-                                  }
-                                  if (capturedBytes != null) {
-                                    _videoSnapshots[item.asset.id] = capturedBytes;
-                                  }
-                                  selectedItems.add(item);
-                                }
-                              });
-                            },
-                            child: Stack(
-                              children: [
-                                Container(
-                                  decoration: BoxDecoration(
-                                    border: isSelected
-                                        ? Border.all(
-                                            color: Colors.green, width: 3)
-                                        : null,
-                                  ),
-                                  child: Stack(
-                                    fit: StackFit.expand,
-                                    children: [
-                                      _buildThumbnailContent(item, snapshot.data),
-                                      if (item.type == MediaType.video)
-                                        const Align(
-                                          alignment: Alignment.bottomRight,
-                                          child: Padding(
-                                            padding: EdgeInsets.all(4),
-                                            child: Icon(
-                                              Icons.play_circle_fill,
-                                              color: Colors.white,
-                                              size: 26,
-                                            ),
-                                          ),
-                                        ),
-                                      if (selectionIndex != null)
-                                        Container(
-                                          color: Colors.black38,
-                                          child: Center(
-                                            child: Text(
-                                              "$selectionIndex",
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 28,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      );
-                    },
-                  ),
+            ),
           ),
         ],
       ),
@@ -560,6 +489,115 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
             ),
+    );
+  }
+
+  Widget _buildMediaGrid() {
+    return GridView.builder(
+      key: const ValueKey<String>('media-grid'),
+      padding: const EdgeInsets.all(12),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        crossAxisSpacing: 5,
+        mainAxisSpacing: 10,
+      ),
+      itemCount: mediaList.length,
+      itemBuilder: (context, index) {
+        final item = mediaList[index];
+        final selectionIndex = _selectionIndexFor(item);
+        final isSelected = widget.selectionMode
+            ? selectionIndex != null
+            : selectedItems.contains(item);
+        final future = _thumbnailFutures[item.asset.id] ??=
+            item.asset.thumbnailDataWithSize(const ThumbnailSize(300, 300));
+        return FutureBuilder<Uint8List?>(
+          future: future,
+          builder: (context, snapshot) {
+            final bytes = snapshot.data;
+            if (bytes == null &&
+                snapshot.connectionState == ConnectionState.waiting) {
+              return Container(color: Colors.grey.shade300);
+            }
+            return GestureDetector(
+              onTap: () async {
+                if (widget.selectionMode) {
+                  await _handleSelectionModeTap(item);
+                  if (widget.selectionLimit == 1 &&
+                      pickerSelections.isNotEmpty) {
+                    _completePickerSelection();
+                  }
+                  return;
+                }
+                Uint8List? capturedBytes;
+                if (item.type == MediaType.video) {
+                  capturedBytes = await Navigator.push<Uint8List?>(
+                    context,
+                    _buildVideoDetailRoute(item),
+                  );
+                  if (!mounted || capturedBytes == null) return;
+                }
+                setState(() {
+                  if (isSelected) {
+                    selectedItems.remove(item);
+                  } else {
+                    if (selectedItems.length >= widget.selectionLimit) {
+                      _showLimitSnackBar();
+                      return;
+                    }
+                    if (capturedBytes != null) {
+                      _videoSnapshots[item.asset.id] = capturedBytes;
+                    }
+                    selectedItems.add(item);
+                  }
+                });
+              },
+              child: Stack(
+                children: [
+                  Container(
+                    decoration: BoxDecoration(
+                      border: isSelected
+                          ? Border.all(color: Colors.green, width: 3)
+                          : null,
+                    ),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        _buildThumbnailContent(item, bytes),
+                        if (item.type == MediaType.video)
+                          const Align(
+                            alignment: Alignment.bottomRight,
+                            child: Padding(
+                              padding: EdgeInsets.all(4),
+                              child: Icon(
+                                Icons.play_circle_fill,
+                                color: Colors.white,
+                                size: 26,
+                              ),
+                            ),
+                          ),
+                        if (selectionIndex != null)
+                          Container(
+                            color: Colors.black38,
+                            child: Center(
+                              child: Text(
+                                "$selectionIndex",
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 28,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -659,4 +697,16 @@ class _PickerSelection {
 
   final MediaItem mediaItem;
   final Uint8List? imageBytes;
+}
+
+class _MediaLoadingIndicator extends StatelessWidget {
+  const _MediaLoadingIndicator({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      key: ValueKey<String>('loading'),
+      child: CircularProgressIndicator(),
+    );
+  }
 }
