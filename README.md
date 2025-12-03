@@ -1,4 +1,4 @@
-# day2
+#Album Project
 
 A new Flutter project.
 
