@@ -445,14 +445,14 @@ class _HomePageState extends State<HomePage> {
                             ? null
                             : () {
                                 setState(() {
-                                  mediaList.removeWhere(
-                                      (m) => selectedItems.contains(m));
+                                  // เปลี่ยนจากการลบไฟล์ออกจาก mediaList
+                                  // เป็นเพียงแค่ยกเลิกการเลือกทั้งหมด
                                   selectedItems.clear();
                                 });
                               },
                         style:
                             ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                        child: const Text("Delete",
+                        child: const Text("Cancel",
                             style: TextStyle(color: Colors.white)),
                       ),
                       const SizedBox(width: 10),
